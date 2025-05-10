@@ -1,4 +1,4 @@
-# Simulation Package
+# Decision Module
 
 This repository provides setup instructions, dependencies installation, and usage guide for running the simulation package with ROS 2.
 
@@ -23,7 +23,7 @@ This repository provides setup instructions, dependencies installation, and usag
 
 ## Prerequisites
 
-* Ubuntu 18.04 or later
+* Ubuntu 22 or later
 * ROS 2 (Foxy, Galactic, or Humble) installed and sourced
 * `cmake`, `git`, and `build-essential` packages
 
