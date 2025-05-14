@@ -450,6 +450,35 @@ class GameManagerROS2(Node):
         
         return max(0, min(1, pass_probability))
 
+    def calculate_future_weighted_pass_score(self, shooter: Robot, receiver: Robot, depth: int, current_probability: float) -> float:
+        
+        MAX_DEPTH = 3
+
+        GOAL_PROBABILITY_THRESHOLD = 0.45
+        
+        GOAL_SCALING_FACTOR = 3.0
+        INCOMPLETE_LINE_FACTOR = 0.8
+
+        EXPONENTIAL_FACTOR = 1.0
+        decay_factor = np.exp(-EXPONENTIAL_FACTOR * depth)
+
+        if depth > MAX_DEPTH:
+            heat_map_value = self.heat_generator.goal_direction_map()[int(receiver.position.y), int(receiver.position.y)]/255.0
+            return current_probability + decay_factor * heat_map_value * INCOMPLETE_LINE_FACTOR
+
+        receiver_goal_probability = self.calculate_goal_probability(receiver)
+        if receiver_goal_probability > GOAL_PROBABILITY_THRESHOLD:
+            return current_probability + decay_factor * receiver_goal_probability * GOAL_SCALING_FACTOR
+        else:
+            max_score = 0.0
+            for teammate in self.our_robots:
+                if teammate.id == receiver.id:
+                    continue
+                pass_score = self.calculate_future_weighted_pass_score(receiver, teammate, depth+1, decay_factor * self.calculate_pass_probability(receiver, teammate) + current_probability) 
+                if pass_score > max_score:
+                    max_score = pass_score
+            return max_score
+
     def calculate_goal_and_pass_probabilities(self) -> Tuple[float, Dict[int, float]]:
         """
         Calculates goal and pass probabilities for the current ball handler.
@@ -468,10 +497,19 @@ class GameManagerROS2(Node):
         
         # Calculate pass probabilities
         pass_probs = {}
+        scale = 0.0
         for teammate in self.our_robots:
             if teammate.id != shooter.id:
                 pass_prob = self.calculate_pass_probability(shooter, teammate)
-                pass_probs[teammate.id] = pass_prob
+
+                if pass_prob > scale:
+                    scale = pass_prob
+
+                pass_probs[teammate.id] = self.calculate_future_weighted_pass_score(shooter, teammate, 0, pass_prob)
+
+        scale = scale / max(pass_probs.values())
+        for key in pass_probs.keys():
+            pass_probs[key] = pass_probs[key] * scale
         
         return goal_prob, pass_probs
 
