@@ -1,5 +1,3 @@
-# Decision Module
-
 This repository provides setup instructions, dependencies installation, and usage guide for running the simulation package with ROS 2.
 
 ---
@@ -15,9 +13,6 @@ This repository provides setup instructions, dependencies installation, and usag
    * [ACADO Toolkit](#acado-toolkit)
 3. [Building the Package](#building-the-package)
 4. [Usage Guide](#usage-guide)
-
-   * [Launching the Simulation](#launching-the-simulation)
-   * [Running the Decision Node](#running-the-decision-node)
 
 ---
 
@@ -90,7 +85,7 @@ export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 In your ROS 2 workspace (e.g., `~/decision_module`), build :
 
 ```bash
-cd ~/decision_module
+cd ~/DecisionModule
 colcon build
 source install/setup.bash
 ```
@@ -117,7 +112,34 @@ ros2 run simulation_pkg decision
 
 ---
 
+## Joystick Controller
+
+The joystick controller allows you to manually steer opponent bots during simulation. Setup is provided by an external repository:
+
+* Joystick setup instructions and configuration files: [Joystick Setup Repository](https://github.com/experiment322/controlloid-server)
+
+1. **Install and configure** the joystick package following the steps in the linked repository.
+2. **Run the joystick controller node**:
+
+   ```bash
+   ros2 run simulation_pkg joystick_controller
+   ```
+3. **Run the server**:
+   ```bash
+   ./start.sh 
+   ```
+
+4. **Connect multiple joystick apps** to control multiple bots simultaneously—each instance will drive a separate bot.
+5. **Controller layout**:
+
+   * Refer to the screenshot below and configure your controller as shown.
+   * The upper button on the joystick can be used to switch control to the currently active bot.
+
+
+
+---
+
 ## License & Acknowledgments
 
 * Original dependencies and scripts provided by the OMPL and ACADO teams.
-* This repository is released under the MIT License. See [LICENSE](LICENSE) for details.
+
