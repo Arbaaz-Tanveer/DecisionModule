@@ -480,7 +480,7 @@ class GameManagerROS2(Node):
         new_line = line + [receiver.position]
 
         if depth > MAX_DEPTH:
-            heat_map_value = self.heat_generator.goal_direction_map()[int(receiver.position.y), int(receiver.position.y)]/255.0
+            heat_map_value = self.heat_generator.goal_direction_map()[int(receiver.position.x), int(receiver.position.y)]/255.0
             return (current_probability + decay_factor * heat_map_value * INCOMPLETE_LINE_FACTOR), line
 
         receiver_goal_probability = self.calculate_goal_probability(receiver)
