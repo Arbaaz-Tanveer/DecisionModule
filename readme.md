@@ -134,6 +134,8 @@ The joystick controller allows you to manually steer opponent bots during simula
 
    * Refer to the screenshot below and configure your controller as shown.
    * The upper button on the joystick can be used to switch control to the currently active bot.
+     
+![445f77af-5178-48e8-9bdf-bc324b348c51](https://github.com/user-attachments/assets/fc81f2ab-c6af-41f7-ae1d-a5483c5070bf)
 
 
 
