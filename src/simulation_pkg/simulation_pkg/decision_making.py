@@ -3,6 +3,8 @@ from typing import List, Tuple, Dict
 from enum import Enum
 from dataclasses import dataclass
 from scipy.optimize import linear_sum_assignment
+from skimage.filters.rank import threshold
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, Float32, String
@@ -375,7 +377,7 @@ class GameManagerROS2(Node):
         and their relative position along the pass line. Opponents closer to the 
         passer (lower t value) are considered less likely to react quickly.
         """
-
+        normalize_factor = 3 #meters
         # Passer and receiver positions
         x1, y1 = pos1
         x2, y2 = pos2
@@ -396,40 +398,46 @@ class GameManagerROS2(Node):
             numerator = abs((y2 - y1) * x - (x2 - x1) * y + x2 * y1 - y2 * x1)
             denominator = math.sqrt((y2 - y1)**2 + (x2 - x1)**2)
             return numerator / denominator if denominator != 0 else 0
-        
-        def get_individual_obstruction_factor(position: Position):
-            normalize_factor = 3 #meters
+
+        obstruction_factor = 0.0
+        for opp in self.opponent_robots:
             # Calculate how far along the pass line the opponent is (0 = at passer, 1 = at receiver)
-            t = project_point(position.x, position.y)
+            t = project_point(opp.position.x, opp.position.y)
             # Only consider opponents that are between the passer and receiver
             if 0 <= t <= 1:
-                dist = point_line_distance(position.x, position.y)
+                dist = point_line_distance(opp.position.x, opp.position.y)
                 # Calculate the basic obstruction contribution based on distance:
                 # Closer opponents (lower dist) contribute more.
                 if dist<BOT_SIZE/2 + 10:
                     basic_obstruction = 9999     #  equivalent to infinite obstruction 
                 basic_obstruction = max(0, 1 - dist / normalize_factor)
                 # Adjust by t so that opponents closer to the passer (lower t) contribute less.
-                return (t+0.2) * basic_obstruction
-            return 0.0
-
-
-        def bot_at_ends(botPos : Position):
-            TOLERANCE = 1.5
-            return (((botPos.x - x1) ** 2 + (botPos.y - y1) ** 2) < (BOT_SIZE * BOT_SIZE * TOLERANCE)) or (((botPos.x - x2) ** 2 + (botPos.y - y2) ** 2) < (BOT_SIZE * BOT_SIZE * TOLERANCE))
-
-        obstruction_factor = 0.0
-        for opp in self.opponent_robots:
-            obstruction_factor += get_individual_obstruction_factor(opp.position)
-        for teammate in self.our_robots:
-            if bot_at_ends(teammate.position):
-                continue
-            obstruction_factor += get_individual_obstruction_factor(teammate.position)
-
+                obstruction_factor += (t+0.2) * basic_obstruction
 
         return obstruction_factor
 
+    def calculate_opponent_goal_probability(self, bot: Robot) -> float:
 
+        goal = self.field.our_goal
+
+        # Distance factor
+        dx = bot.position.x - goal.x
+        dy = bot.position.y - goal.y
+        distance = math.sqrt(dx * dx + dy * dy)
+        max_distance = self.field.length
+        distance_factor = 1.0 - (distance / max_distance)
+
+        # Heat map factor
+        goal_heat_map = self.heat_generator.goal_direction_map(goal_pos=(goal.x, goal.y))
+        heat_map_factor = goal_heat_map[int(bot.position.y), int(bot.position.x)] / 255.0
+        # Combine factors
+        goal_probability = (
+                0.5 * distance_factor +
+                # 0.2 * (1 - 0.5) +
+                heat_map_factor
+        )
+        # Store individual factors
+        return max(0, min(1, goal_probability))
 
     def calculate_pass_probability(self, bot: Robot, teammate: Robot) -> float:
         """
@@ -465,43 +473,7 @@ class GameManagerROS2(Node):
         
         return max(0, min(1, pass_probability))
 
-    def calculate_future_weighted_pass_score(self, shooter: Robot, receiver: Robot, depth: int, current_probability: float, line: List[Position]) -> Tuple[float, List[Position]]:
-        
-        MAX_DEPTH = 3
-
-        GOAL_PROBABILITY_THRESHOLD = 0.45
-        
-        GOAL_SCALING_FACTOR = 3.0
-        INCOMPLETE_LINE_FACTOR = 0.8
-
-        EXPONENTIAL_FACTOR = 1.0
-        decay_factor = np.exp(-EXPONENTIAL_FACTOR * depth)
-
-        new_line = line + [receiver.position]
-
-        if depth > MAX_DEPTH:
-            heat_map_value = self.heat_generator.goal_direction_map()[int(receiver.position.x), int(receiver.position.y)]/255.0
-            return (current_probability + decay_factor * heat_map_value * INCOMPLETE_LINE_FACTOR), line
-
-        receiver_goal_probability = self.calculate_goal_probability(receiver)
-        if receiver_goal_probability > GOAL_PROBABILITY_THRESHOLD:
-            return (current_probability + decay_factor * receiver_goal_probability * GOAL_SCALING_FACTOR), line + [self.field.opponent_goal]
-        else:
-            max_score = current_probability
-            max_line = new_line
-            for teammate in self.our_robots:
-                if teammate.id == receiver.id:
-                    continue
-                pass_probability = self.calculate_pass_probability(receiver, teammate)
-                if not pass_probability:
-                    continue
-                pass_score, pass_line = self.calculate_future_weighted_pass_score(receiver, teammate, depth+1, (decay_factor * pass_probability) + current_probability, new_line) 
-                if pass_score > max_score:
-                    max_score = pass_score
-                    max_line = pass_line
-            return max_score, max_line
-
-    def calculate_goal_and_pass_probabilities(self) -> Tuple[float, Dict[int, float], Dict[int, List[Position]]]:
+    def calculate_goal_and_pass_probabilities(self) -> Tuple[float, Dict[int, float]]:
         """
         Calculates goal and pass probabilities for the current ball handler.
         Maintains the original function signature.
@@ -509,7 +481,7 @@ class GameManagerROS2(Node):
 
         ball_holder_id = self.state.ball_holder
         if ball_holder_id < 0 or ball_holder_id >= len(self.our_robots):
-            return 0.0, {}, {}
+            return 0.0, {}
         
         shooter = self.our_robots[ball_holder_id]
         
@@ -519,37 +491,12 @@ class GameManagerROS2(Node):
         
         # Calculate pass probabilities
         pass_probs = {}
-        pass_lines = {}
-        scale = 0.0
         for teammate in self.our_robots:
             if teammate.id != shooter.id:
                 pass_prob = self.calculate_pass_probability(shooter, teammate)
-
-                if pass_prob > scale:
-                    scale = pass_prob
-
-                pass_probs[teammate.id], pass_lines[teammate.id] = self.calculate_future_weighted_pass_score(shooter, teammate, 0, pass_prob, [shooter.position])
-
-        scale = scale / max(pass_probs.values())
-        for key in pass_probs.keys():
-            pass_probs[key] = pass_probs[key] * scale
+                pass_probs[teammate.id] = pass_prob
         
-        return goal_prob, pass_probs, pass_lines
-
-    def draw_pass_line(self, line: List[Position], image):
-        if(line == None):
-            return
-        scale_factor = self.visualizer.scale
-        sy, sx = self.visualizer.get_nearest_index((line[0].x, line[0].y))
-        sy = (int)(sy * scale_factor)
-        sx = (int)(sx * scale_factor)
-        for i in range(1, len(line)):
-            ey, ex = self.visualizer.get_nearest_index((line[i].x, line[i].y))
-            ey = (int)(ey * scale_factor)
-            ex = (int)(ex * scale_factor)
-            red = (int)((255*(i-1))/(len(line)-2)) if len(line) != 2 else 0
-            self.visualizer.draw_dotted_line(image, (sx, sy), (ex, ey), (0, 255, red))
-            sx, sy = ex, ey
+        return goal_prob, pass_probs
 
     # --- Modified "We Have Ball" logic ---
     def _handle_we_have_ball(self):
@@ -568,7 +515,7 @@ class GameManagerROS2(Node):
                                                         ball_handler.position.z)
         
         # Calculate probabilities.
-        goal_prob, pass_probs, pass_lines = self.calculate_goal_and_pass_probabilities()
+        goal_prob, pass_probs = self.calculate_goal_and_pass_probabilities()
         best_pass_id = None
         best_pass_prob = 0.0
         for teammate_id, prob in pass_probs.items():
@@ -668,13 +615,7 @@ class GameManagerROS2(Node):
         if self.pass_in_progress:
             excluded_ids.add(self.pass_receiver_id)
         available_robots = [robot for robot in self.our_robots if robot.id not in excluded_ids]
-        strategic_positions, image = self.generate_strategic_positions()[:len(available_robots)]
-        
-        self.draw_assignment_lines(image)
-        if best_pass_id is not None:
-            self.draw_pass_line(pass_lines[best_pass_id], image)
-        self.draw_heatmap(image)
-        
+        strategic_positions = self.generate_strategic_positions()[:len(available_robots)]
         assignments = self.assign_positions(strategic_positions, available_robots)
         for robot_id, target_pos in assignments.items():
             self.our_robots[robot_id].target_position = target_pos
@@ -711,11 +652,7 @@ class GameManagerROS2(Node):
                                                       closest_robot.position.z)
         # Generate positions for other robots.
         available_robots = [robot for robot in self.our_robots if robot.id != closest_robot.id]
-        strategic_positions, image = self.generate_strategic_positions()
-        
-        self.draw_assignment_lines(image)
-        self.draw_heatmap(image)
-
+        strategic_positions = self.generate_strategic_positions()
         assignments = self.assign_positions(strategic_positions, available_robots)
         for robot_id, target_pos in assignments.items():
             self.our_robots[robot_id].target_position = target_pos
@@ -724,83 +661,143 @@ class GameManagerROS2(Node):
     def _handle_opponent_has_ball(self):
         """Basic handling when an opponent has the ball."""
         self.get_logger().info("\nHandling OPPONENT_HAS_BALL state:")
-        strategic_positions, image = self.generate_strategic_positions()
-        self.draw_assignment_lines(image)
-        self.draw_heatmap(image)
-        # assignments = self.assign_positions(strategic_positions, available_robots)
+        # strategic_positions = self.generate_strategic_positions()
+        # # assignments = self.assign_positions(strategic_positions, available_robots)
+        #
+        # closest_opp = min(self.opponent_robots,
+        #                   key=lambda r: np.sqrt((r.position.x - self.ball.position.x)**2 +
+        #                                         (r.position.y - self.ball.position.y)**2))
+        # closest_our = min(self.our_robots,
+        #                   key=lambda r: np.sqrt((r.position.x - self.ball.position.x)**2 +
+        #                                         (r.position.y - self.ball.position.y)**2))
+        # blocking_pos = Position(
+        #     closest_opp.position.x - 1.5,
+        #     closest_opp.position.y,5
+        #     0.0
+        # )
+        # closest_our.target_position = blocking_pos
+        # closest_our.target_theta = math.atan2(
+        #     self.ball.position.y - blocking_pos.y,
+        #     self.ball.position.x - blocking_pos.x
+        # )
+        # available_robots = [robot for robot in self.our_robots
+        #                     if robot.id != closest_our.id and robot.role != RobotRole.GOALKEEPER]
+        # defensive_positions = []
+        # base_x = (self.field.our_goal.x + self.ball.position.x) / 2
+        # spread = 2.0
+        # for i in range(len(available_robots)):
+        #     y_pos = self.ball.position.y + spread * (i - len(available_robots)/2)
+        #     defensive_positions.append(Position(base_x, y_pos, 0.0))
+        # assignments = self.assign_positions(defensive_positions, available_robots)
+        # for robot_id, target_pos in assignments.items():
+        #     self.our_robots[robot_id].target_position = target_pos
+        #     self.our_robots[robot_id].target_theta = math.atan2(
+        #         self.ball.position.y - target_pos.y,
+        #         self.ball.position.x - target_pos.x
+        #     )
+        #     self.get_logger().info(
+        #         f"Robot {robot_id} defending at position ({target_pos.x:.2f}, {target_pos.y:.2f})"
+        #     )
+        def get_block_pos(pos1, pos2):
+            dx = pos1.x - pos2.x
+            dy = pos1.y - pos2.y
+            distance = math.sqrt(dx**2 + dy**2)
+            target_x = ((distance - 1) * pos2.x + 1*pos1.x)/distance
+            target_y = ((distance - 1) * pos2.y + 1*pos1.y)/distance
+            return Position(target_x, target_y, 0.0)
 
-        closest_opp = min(self.opponent_robots, 
-                          key=lambda r: np.sqrt((r.position.x - self.ball.position.x)**2 + 
-                                                (r.position.y - self.ball.position.y)**2))
-        closest_our = min(self.our_robots, 
-                          key=lambda r: np.sqrt((r.position.x - self.ball.position.x)**2 + 
-                                                (r.position.y - self.ball.position.y)**2))
-        blocking_pos = Position(
-            closest_opp.position.x - 1.5,
-            closest_opp.position.y,
-            0.0
-        )
-        closest_our.target_position = blocking_pos
-        closest_our.target_theta = math.atan2(
-            self.ball.position.y - blocking_pos.y,
-            self.ball.position.x - blocking_pos.x
-        )
-        available_robots = [robot for robot in self.our_robots 
-                            if robot.id != closest_our.id and robot.role != RobotRole.GOALKEEPER]
-        defensive_positions = []
-        base_x = (self.field.our_goal.x + self.ball.position.x) / 2
-        spread = 2.0
-        for i in range(len(available_robots)):
-            y_pos = self.ball.position.y + spread * (i - len(available_robots)/2)
-            defensive_positions.append(Position(base_x, y_pos, 0.0))
-        assignments = self.assign_positions(defensive_positions, available_robots)
+        # create a heatmap for opponent
+        # we need to block opponents goal kick, pass
+
+        #blocking goal
+        closest_robot = min(self.our_robots,
+                            key=lambda r: np.sqrt((r.position.x - self.ball.position.x) ** 2 +
+                                                  (r.position.y - self.ball.position.y) ** 2))
+        closest_opp_robot = min(self.opponent_robots, key=lambda r: np.sqrt((r.position.x - self.ball.position.x) ** 2 +
+                                                                              (r.position.y - self.ball.position.y) ** 2))
+
+        goal_ball_distance = math.sqrt((self.field.our_goal.x - self.ball.position.x) ** 2 + (self.field.our_goal.y - self.ball.position.y) ** 2)
+        # target_x = ((goal_ball_distance - 1)*self.ball.position.x + 1*self.field.our_goal.x) / goal_ball_distance
+        # target_y = ((goal_ball_distance - 1)*self.ball.position.y + 1*self.field.our_goal.y) / goal_ball_distance
+        blocking_pos = get_block_pos(self.field.our_goal, self.ball.position)
+        closest_robot.target_position = blocking_pos
+        closest_robot.target_theta = math.atan2(
+                self.ball.position.y - blocking_pos.y,
+                self.ball.position.x - blocking_pos.x
+            )
+        self.get_logger().info(f"Robot {closest_robot.id} is closest to ball - moving to block current ball holder")
+        available_robots = [robot for robot in self.our_robots
+                            if robot.id != closest_robot.id and robot.role != RobotRole.GOALKEEPER]
+        opp_goal_probs = []
+        opps = []
+        for opp in self.opponent_robots:
+            print(len(available_robots))
+            if opp == closest_opp_robot: continue
+            opp_goal_prob = self.calculate_opponent_goal_probability(opp)
+            opp_goal_probs.append((opp.position, opp_goal_prob))
+            print(f"opp_goal_prob: {opp_goal_prob}, opponent: {opp.id}")
+        if len(available_robots) > 0:
+            max_goal_prob = max(opp_goal_probs, key=lambda x: x[1])
+            opp_goal_pos = max_goal_prob[0]
+            opps.append(opp_goal_pos)
+            closest_our = min(available_robots, key=lambda r: np.sqrt((r.position.x - opp_goal_pos.x) ** 2 +
+                                                                          (r.position.y - opp_goal_pos.y) ** 2))
+            blocking_pos = get_block_pos(closest_opp_robot.position, opp_goal_pos)
+            closest_our.target_position = blocking_pos
+            closest_our.target_theta = math.atan2(
+                self.ball.position.y - blocking_pos.y,
+                self.ball.position.x - blocking_pos.x
+            )
+            opp_goal_probs.remove(max_goal_prob)
+            self.get_logger().info(
+                f"Robot {closest_our.id} blocking opponent at position ({opp_goal_pos.x:.2f}, {opp_goal_pos.y:.2f})"
+            )
+            available_robots.remove(closest_our)
+        self.opp_goal_probs = opp_goal_probs
+        self.closest_opp_pos = closest_opp_robot.position
+        strategic_positions = self.generate_strategic_positions()
+        assignments = self.assign_positions(strategic_positions, available_robots)
         for robot_id, target_pos in assignments.items():
             self.our_robots[robot_id].target_position = target_pos
-            self.our_robots[robot_id].target_theta = math.atan2(
-                self.ball.position.y - target_pos.y,
-                self.ball.position.x - target_pos.x
-            )
-            self.get_logger().info(
-                f"Robot {robot_id} defending at position ({target_pos.x:.2f}, {target_pos.y:.2f})"
-            )
-
-    def generate_strategic_positions(self) -> Tuple[List[Position], np.ndarray]:
+            self.get_logger().info(f"Robot {robot_id} moving to support at position ({target_pos.x:.2f}, {target_pos.y:.2f})")
+    def generate_strategic_positions(self) -> List[Position]:
         """Generate strategic positions using heatmaps based on game state."""
         maps = []
         weights = []
         maps.extend([
             self.heat_generator.robots_repulsion_map(),
             self.heat_generator.vertical_center_attraction_map(),
-            self.heat_generator.horizontal_right_attraction_map(),
         ])
         weights.extend([0.6, 0.15, 0.15,0.2])
         if self.game_state == GameState.WE_HAVE_BALL:
             maps.extend([
                 self.heat_generator.ideal_pass_distance_map(),
+                self.heat_generator.horizontal_right_attraction_map(),
                 self.heat_generator.goal_direction_map()
             ])
             weights.extend([0.2, 0.15])
         elif self.game_state == GameState.LOOSE_BALL:
             maps.extend([
                 self.heat_generator.ideal_pass_distance_map(),
+                self.heat_generator.horizontal_right_attraction_map(),
                 self.heat_generator.goal_direction_map()
             ])
             weights.extend([0.2, 0.15])
         elif self.game_state == GameState.OPPONENT_HAS_BALL:
             maps.extend([
                 self.heat_generator.defensive_opponent_influence_map(),
-                self.heat_generator.goal_direction_map()
+                self.heat_generator.horizontal_left_attraction_map(),
+                self.heat_generator.pass_block_map(self.closest_opp_pos, self.opp_goal_probs)
             ])
             weights.extend([0.2, 0.15])
         combined_map = self.heat_generator.combine_heat_maps(maps, weights)
         positions = self.clusterer.get_strategic_positions(combined_map)
         image = self.visualizer.get_opencv_visualization_aligned(combined_map, positions)
-        return [Position(pos[0], pos[1]) for pos in positions], image    
-    
-    def draw_heatmap(self, image):
+        self.draw_assignment_lines(image)
         image = cv2.flip(image, 0)
         cv2.imshow("heatmap", image)
         cv2.waitKey(1)
+        return [Position(pos[0], pos[1]) for pos in positions]
 
     def assign_positions(self, strategic_positions: List[Position], robots: List[Robot]) -> Dict[int, Position]:
         """Assign robots to positions using the Hungarian algorithm while preserving robot IDs."""
