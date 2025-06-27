@@ -13,7 +13,6 @@ from .heat_maps import HeatMapClusterer, HeatMapGenerator, RoboCupState, HeatMap
 import cv2
 from .robot_sim import BOT_SIZE
 import time
-
 PASS_ALIGNMENT_THRESHOLD = 0.1   #degreee of alignment in radians
 
 GLOBAL_PROBABILITIES = {
