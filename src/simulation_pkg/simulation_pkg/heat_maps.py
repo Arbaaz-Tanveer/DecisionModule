@@ -9,9 +9,9 @@ import math
 class RoboCupState:
     def __init__(self):
         # Field dimensions (in meters)
-        self.field_length = 22.0  # Adjust based on your field size
-        self.field_width = 14.0   # Adjust based on your field size
-        
+        self.field_length = 22.0
+        self.field_width = 14.0
+
         # Initialize with example positions
         self.our_positions = np.array([
             [-2.0, 1.0],   # Player 1 (ball holder)

@@ -85,9 +85,9 @@ class SoccerBall:
             self.state.z = 0
             self.state.vz = -self.state.vz * GROUND_DAMPING
 
-        if self.state.z<0.1:
-            self.state.vx *= (1-(1-GROUND_DAMPING) * dt)
-            self.state.vy *= (1-(1-GROUND_DAMPING) * dt)
+        if self.state.z < 0.1:
+            self.state.vx *= (1 - (1 - GROUND_DAMPING) * dt)
+            self.state.vy *= (1 - (1 - GROUND_DAMPING) * dt)
 
         # Check for robot possession
         if self.state.z < BALL_DIAMETER/2:  # Only allow possession when ball is near ground
@@ -441,7 +441,39 @@ class ROS2RobotSimulation(Node):
 
         # Create timer for updating and rendering
         self.create_timer(1.0/FPS, self.update_and_render)
-    
+
+    # Inelastic collision handler for equal masses
+    def resolve_bot_collisions(self):
+        bot_radius = BOT_SIZE / 2
+        min_distance = 2.1 * bot_radius
+
+        for i, bot1 in enumerate(self.robots):
+            for j, bot2 in enumerate(self.robots):
+                if i >= j:
+                    continue  # Skip self and duplicate pairs
+
+                dx = bot1.x - bot2.x
+                dy = bot1.y - bot2.y
+                dist = math.hypot(dx, dy)
+
+                if dist < min_distance and dist > 1e-5:
+                    # Collision normal (from bot2 to bot1)
+                    nx = dx / dist
+                    ny = dy / dist
+
+                    # Velocities along the normal
+                    v1n = bot1.vx * nx + bot1.vy * ny
+                    v2n = bot2.vx * nx + bot2.vy * ny
+
+                    # Shared normal velocity (perfectly inelastic, equal masses)
+                    v_avg = (v1n + v2n) / 2
+
+                    # Update velocities: set normal components to v_avg
+                    bot1.vx += (v_avg - v1n) * nx
+                    bot1.vy += (v_avg - v1n) * ny
+                    bot2.vx += (v_avg - v2n) * nx
+                    bot2.vy += (v_avg - v2n) * ny
+
     # Modified command callback to handle ball commands
     def command_callback(self, msg: String):
         """Handle simplified command format for ball control"""
@@ -515,12 +547,14 @@ class ROS2RobotSimulation(Node):
             robot.update(dt)
             self.publish_robot_state(robot, i)
         
+        # Resolve inelastic collisions among robots
+        self.resolve_bot_collisions()
+        
         # Publish status
         status_msg = String()
         status_msg.data = "Simulation running"
         self.status_pub.publish(status_msg)
         
-
         # Update ball physics
         self.ball.update(1.0/FPS, self.robots)
         
@@ -562,23 +596,23 @@ class ROS2RobotSimulation(Node):
         self.clock.tick(FPS)
 
     def draw_field(self):
-            """Draw the field with boundaries"""
-            self.screen.fill((0, 100, 0))
-            
-            field_width_px = int(FIELD_WIDTH * self.scale)
-            field_height_px = int(FIELD_HEIGHT * self.scale)
-            start_x = (self.width - field_width_px) // 2
-            start_y = (self.height - field_height_px) // 2
-            
-            pygame.draw.rect(self.screen, (255, 255, 255),
-                            (start_x, start_y, field_width_px, field_height_px), 2)
-            
-            pygame.draw.line(self.screen, (255, 255, 255),
-                            (self.width//2, start_y),
-                            (self.width//2, start_y + field_height_px), 2)
-            pygame.draw.circle(self.screen, (255, 255, 255),
-                            (self.width//2, self.height//2),
-                            int(50 * self.scale), 2)
+        """Draw the field with boundaries"""
+        self.screen.fill((0, 100, 0))
+        
+        field_width_px = int(FIELD_WIDTH * self.scale)
+        field_height_px = int(FIELD_HEIGHT * self.scale)
+        start_x = (self.width - field_width_px) // 2
+        start_y = (self.height - field_height_px) // 2
+        
+        pygame.draw.rect(self.screen, (255, 255, 255),
+                        (start_x, start_y, field_width_px, field_height_px), 2)
+        
+        pygame.draw.line(self.screen, (255, 255, 255),
+                        (self.width//2, start_y),
+                        (self.width//2, start_y + field_height_px), 2)
+        pygame.draw.circle(self.screen, (255, 255, 255),
+                        (self.width//2, self.height//2),
+                        int(50 * self.scale), 2)
     
     
     def cmd_vel_callback(self, msg: Twist, robot_index: int):
