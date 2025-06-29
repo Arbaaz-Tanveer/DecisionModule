@@ -97,6 +97,7 @@ class HeatMapGenerator:
         x_normalized = ((self.state.X.max() - self.state.X) / (4*(self.state.X.max() - self.state.X.min())))
         return x_normalized
 
+
     def ball_holder_circle_map(self, radius=1.5):
         """Generate circular region around ball holder"""
         heat_map = np.zeros_like(self.state.X)
@@ -280,13 +281,17 @@ class HeatMapClusterer:
     def __init__(self, state: RoboCupState):
         self.state = state
         
-    def find_optimal_positions(self, heat_map, n_clusters=5):
+    def find_optimal_positions(self, heat_map, n_clusters=5, max_points = None):
         """Find optimal positions in the heatmap using clustering"""
         high_value_points = np.argwhere(heat_map > 0.85)
         
         if len(high_value_points) < n_clusters:
             return np.array([[0, 0]] * n_clusters)
-            
+
+        if max_points is not None and len(high_value_points) > max_points:
+            indices = np.random.choice(len(high_value_points), max_points, replace=False)
+            high_value_points = high_value_points[indices]
+
         weights = np.array([heat_map[x, y] for x, y in high_value_points])
         
         kmeans = KMeans(n_clusters=n_clusters, random_state=42)
