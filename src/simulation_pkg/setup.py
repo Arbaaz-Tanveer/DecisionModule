@@ -28,6 +28,7 @@ setup(
             'linear_controller = simulation_pkg.linear_controller:main',
             'decision = simulation_pkg.decision_making:main',
             'kinematic_controller = simulation_pkg.kinematic_controller:main',
+            'keyboard_controller = simulation_pkg.keyboard_controller:main',
             'multi_robot_kinematic_controller = simulation_pkg.multi_robot_kinematic_controller:main' 
         ],
     },

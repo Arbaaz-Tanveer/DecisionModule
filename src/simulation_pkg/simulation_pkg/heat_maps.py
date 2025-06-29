@@ -92,7 +92,12 @@ class HeatMapGenerator:
         # leftmost = 0.0, rightmost = 1.0
         x_normalized = (self.state.X - self.state.X.min()) / (self.state.X.max() - self.state.X.min())
         return x_normalized
-    
+
+    def horizontal_left_attraction_map(self):
+        x_normalized = ((self.state.X.max() - self.state.X) / (4*(self.state.X.max() - self.state.X.min())))
+        return x_normalized
+
+
     def ball_holder_circle_map(self, radius=1.5):
         """Generate circular region around ball holder"""
         heat_map = np.zeros_like(self.state.X)
@@ -156,8 +161,42 @@ class HeatMapGenerator:
             heat_map /= heat_map.max()
 
         return heat_map
+    def pass_block_map(self, closest_opp_pos = None, opp_goal_probs= None):
 
-    
+        opp_pos = []
+        thresholds = []
+        for pos, prob in opp_goal_probs:
+            opp_pos.append(pos)
+            thresholds.append(prob)
+        heat_map = np.zeros_like(self.state.X)
+
+        for k in range(len(opp_pos)):
+            pos = opp_pos[k]
+
+            dx = pos.x - closest_opp_pos.x
+            dy = pos.y - closest_opp_pos.y
+
+            num_points = int(max(self.state.field_length, self.state.field_width) * self.state.resolution)
+            x_vals = np.linspace(pos.x, closest_opp_pos.x, num_points)
+            y_vals = np.linspace(pos.y, closest_opp_pos.y, num_points)
+
+            def world_to_index(x, y, field_length, field_width, resolution):
+                i = int(round((y + field_width / 2) * resolution))  # row index
+                j = int(round((x + field_length / 2) * resolution))  # column index
+                return j, i  # notice: (col=x, row=y)
+
+            for xi, yi in zip(x_vals, y_vals):
+                j, i = world_to_index(xi, yi, self.state.field_length, self.state.field_width, self.state.resolution)
+                if 0 <= i < heat_map.shape[0] and 0 <= j < heat_map.shape[1]:
+                    heat_map[i, j] = thresholds[k]
+                    heat_map[i+1, j] = thresholds[k]
+                    heat_map[i+2, j] = thresholds[k]
+                    heat_map[i, j+1] = thresholds[k]
+                    heat_map[i, j+2] = thresholds[k]
+        # Normalize
+        heat_map = (heat_map - np.min(heat_map)) / (np.max(heat_map) - np.min(heat_map) + 1e-8)
+        return heat_map
+
     def goalpost_entrance_map(self, x_min=8.0, y_min=-3.0, y_max=3.0):
         """
         Generate a heat map that highlights a rectangular region at the right portion of the field,
@@ -248,7 +287,7 @@ class HeatMapClusterer:
         
         if len(high_value_points) < n_clusters:
             return np.array([[0, 0]] * n_clusters)
-        
+
         if max_points is not None and len(high_value_points) > max_points:
             indices = np.random.choice(len(high_value_points), max_points, replace=False)
             high_value_points = high_value_points[indices]
@@ -448,11 +487,13 @@ if __name__ == "__main__":
     repulsion_map = generator.robots_repulsion_map()
     vertical_map = generator.vertical_center_attraction_map()
     horizontal_map = generator.horizontal_right_attraction_map()  # New map
+    horizontal_left_map = generator.horizontal_left_attraction_map()
     pass_distance_map = generator.ideal_pass_distance_map()
     goal_map = generator.goal_direction_map()
     goalpost_map = generator.goalpost_entrance_map()  # New goalpost entrance map
     defensive_map = generator.defensive_opponent_influence_map()  # New defensive opponent influence map
-    
+    pass_blocking_map = generator.pass_block_map()
+
     # Combine maps (adjust weights as needed)
     combine_time = time.time()
     combined_map = generator.combine_heat_maps(
@@ -469,10 +510,12 @@ if __name__ == "__main__":
     visualizer.show_matplotlib(repulsion_map, "Robots Repulsion Map")
     visualizer.show_matplotlib(vertical_map, "Vertical Center Attraction Map")
     visualizer.show_matplotlib(horizontal_map, "Horizontal Right Attraction Map")
+    visualizer.show_matplotlib(horizontal_left_map, "Horizontal Left Attraction Map")
     visualizer.show_matplotlib(pass_distance_map, "Ideal Pass Distance Map")
     visualizer.show_matplotlib(goal_map, "Goal Direction Map")
     visualizer.show_matplotlib(goalpost_map, "Goalpost Entrance Map")
     visualizer.show_matplotlib(defensive_map, "Defensive Opponent Influence Map")
+    visualizer.show_matplotlib(pass_blocking_map, "Pass blocking map")
     visualizer.show_matplotlib(combined_map, "Combined Heat Map")
 
     visualizer.visualize_clusters(combined_map, positions)
